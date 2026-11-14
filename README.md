@@ -35,11 +35,11 @@ Shareable, realtime to-do lists. Create a list, share it with others by email, a
 
 ## How sharing works
 
-A list belongs to its owner. The owner shares it by entering an email address and a role (editor or viewer). Membership matches the confirmed email of a signed-in user, and Postgres row level security enforces access, so the client never decides who may read or write. See `contracts/rls.md`.
+A list belongs to its owner. The owner shares it by entering an email address and a role (editor or viewer). A share matches only the confirmed email of a signed-in user (never an unverified email claim), and Postgres row level security enforces access, so the client never decides who may read or write. Editors and viewers can see the emails of the other members of lists they belong to. See `contracts/rls.md`.
 
 ## How realtime works
 
-Clients subscribe to Supabase Realtime changes for the lists they can open. Row level security applies to those events too, so members only receive changes for lists they belong to. See `contracts/realtime.md`.
+Clients subscribe to Supabase Realtime `postgres_changes` for the list they have open. INSERT and UPDATE events are checked against the read policies, so a user only receives rows they may read. DELETE events are not filtered: every subscribed client receives the `id` of every delete across all lists. Ids are random uuids, so no emails or titles leak. Both behaviours are still marked unverified in `contracts/realtime.md`. See that file for details.
 
 ## Docs
 

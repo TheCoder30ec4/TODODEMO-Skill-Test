@@ -4,7 +4,7 @@
 
 - One branch per task; keep PRs small and focused.
 - Open a PR against `main`. `main` is protected: no direct pushes.
-- The CI job `ci` (install, lint, typecheck, build, tests on Node 22) must pass.
+- The CI job `ci` (install, lint, typecheck, build, tests on Node 22) runs on every PR and should pass. It becomes a required check once the gate is applied; today the ruleset requires only `orch/review`.
 - An independent review sets the `orch/review` status; it must be green before merge.
 - Merge with squash.
 

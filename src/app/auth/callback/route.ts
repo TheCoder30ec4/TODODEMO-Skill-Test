@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 
 // Same-origin relative path only: single leading "/", no "//", no backslash, no scheme.
 function safeNext(next: string | null): string {
-  return next && /^\/(?![/\\])/.test(next) && !/[\u0000-\u001f]/.test(next) ? next : "/lists";
+  return next && /^\/(?![/\\])/.test(next) && !/[\u0000-\u001f\u007f]/.test(next) ? next : "/lists";
 }
 
 export async function GET(request: NextRequest) {

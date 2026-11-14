@@ -27,39 +27,43 @@ export default function ShareDialog({ db, listId, open, members, onClose, onMemb
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Role>("viewer");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     const d = ref.current;
     if (!d) return;
-    if (open && !d.open) d.showModal();
+    if (open && !d.open) { setError(""); d.showModal(); }
     else if (!open && d.open) d.close();
   }, [open]);
 
-  async function run<T>(p: Promise<Result<T>>, then: (v: T) => void) {
+  async function run<T>(call: () => Promise<Result<T>>, then: (v: T) => void) {
+    if (busy) return;
     setError("");
-    const r = await p;
+    setBusy(true);
+    const r = await call();
+    setBusy(false);
     if (r.ok) then(r.data);
     else setError(explain(r.error));
   }
 
   function onAdd(e: FormEvent) {
     e.preventDefault();
-    void run(shareList(db, listId, email, role), (m) => { onMemberUpsert(m); setEmail(""); });
+    void run(() => shareList(db, listId, email, role), (m) => { onMemberUpsert(m); setEmail(""); });
   }
 
   return (
     <dialog ref={ref} className={s.dialog} aria-labelledby="share-title" onClose={onClose}>
       <h2 id="share-title">Share list</h2>
       <form onSubmit={onAdd} className={s.row}>
-        <label htmlFor="share-email" style={{ position: "absolute", left: "-9999px" }}>Email to share with</label>
+        <label htmlFor="share-email" className={s.srOnly}>Email to share with</label>
         <input id="share-email" type="email" required placeholder="Email" className={s.grow}
           value={email} onChange={(e) => setEmail(e.target.value)} />
-        <label htmlFor="share-role" style={{ position: "absolute", left: "-9999px" }}>Role</label>
+        <label htmlFor="share-role" className={s.srOnly}>Role</label>
         <select id="share-role" value={role} onChange={(e) => setRole(e.target.value as Role)}>
           <option value="viewer">Viewer</option>
           <option value="editor">Editor</option>
         </select>
-        <button type="submit">Add</button>
+        <button type="submit" disabled={busy}>Add</button>
       </form>
       <div aria-live="polite">{error && <p role="alert" className={s.error}>{error}</p>}</div>
       <h3>Members</h3>
@@ -69,13 +73,13 @@ export default function ShareDialog({ db, listId, open, members, onClose, onMemb
             <li key={m.id} className={`${s.card} ${s.between}`}>
               <span>{m.email}</span>
               <span className={s.row}>
-                <select aria-label={`Role for ${m.email}`} value={m.role}
-                  onChange={(e) => void run(changeRole(db, listId, m.email, e.target.value as Role), onMemberUpsert)}>
+                <select disabled={busy} aria-label={`Role for ${m.email}`} value={m.role}
+                  onChange={(e) => { const role2 = e.target.value as Role; void run(() => changeRole(db, listId, m.email, role2), onMemberUpsert); }}>
                   <option value="viewer">Viewer</option>
                   <option value="editor">Editor</option>
                 </select>
-                <button type="button" aria-label={`Remove ${m.email}`}
-                  onClick={() => void run(unshareList(db, listId, m.email), () => onMemberRemove(m.id))}>Remove</button>
+                <button type="button" disabled={busy} aria-label={`Remove ${m.email}`}
+                  onClick={() => void run(() => unshareList(db, listId, m.email), () => onMemberRemove(m.id))}>Remove</button>
               </span>
             </li>
           ))}

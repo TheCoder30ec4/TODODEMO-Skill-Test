@@ -7,6 +7,7 @@ import type { AppError, ChannelStatus, ListMember, ListWithRole, Todo } from "@c
 import { createClient } from "@/lib/supabase/client";
 import { addTodo, deleteTodo, getList, subscribeToList, toggleTodo, updateTodo } from "@/lib/lists";
 import { listMembers } from "@/lib/sharing";
+import { applyDelete, applyUpsert, reconcile, restoreDeleted, rollback } from "./listMerge";
 import ShareDialog from "./ShareDialog";
 import TodoItem from "./TodoItem";
 import s from "./ui.module.css";
@@ -23,31 +24,24 @@ export default function ListView({ listId }: { listId: string }) {
   const [live, setLive] = useState(false);
   const [error, setError] = useState("");
   const [title, setTitle] = useState("");
+  const [adding, setAdding] = useState(false);
+  const todosRef = useRef(todos);
+  todosRef.current = todos;
   const [shareOpen, setShareOpen] = useState(false);
   const deleted = useRef(new Set<string>());
   const shareBtn = useRef<HTMLButtonElement>(null);
 
-  // Rule 3: server updatedAt ordering plus tombstones.
-  const upsert = useCallback((t: Todo) => {
-    if (deleted.current.has(t.id)) return;
-    setTodos((m) => {
-      const cur = m.get(t.id);
-      if (cur && t.updatedAt < cur.updatedAt) return m;
-      return new Map(m).set(t.id, t);
-    });
-  }, []);
-  const remove = useCallback((id: string) => {
-    deleted.current.add(id);
-    setTodos((m) => { if (!m.has(id)) return m; const n = new Map(m); n.delete(id); return n; });
-  }, []);
+  const upsert = useCallback((t: Todo) => setTodos((m) => applyUpsert(m, deleted.current, t)), []);
+  const remove = useCallback((id: string) => setTodos((m) => applyDelete(m, deleted.current, id)), []);
 
-  const leave = useCallback(() => router.replace("/lists?revoked=1"), [router]);
+  // Signed-out users go to /login; only signed-in users who lost access see the notice.
+  const leave = useCallback(() => {
+    db.auth.getUser().then(({ data }) => router.replace(data.user ? "/lists?revoked=1" : "/login"));
+  }, [db, router]);
 
   useEffect(() => {
-    let wasDown = false;
-    let first = true;
-
-    async function refresh(reconnect: boolean) {
+    async function refresh() {
+      const before = new Set(todosRef.current.keys());
       const [d, mem] = await Promise.all([getList(db, listId), listMembers(db, listId)]);
       if (!d.ok) {
         if (d.error.kind === "Unauthenticated") router.replace("/login");
@@ -56,11 +50,7 @@ export default function ListView({ listId }: { listId: string }) {
         return;
       }
       setList(d.data.list);
-      d.data.todos.forEach(upsert);
-      if (reconnect) { // missed deletes are not replayed: drop todos absent from the snapshot
-        const ids = new Set(d.data.todos.map((t) => t.id));
-        setTodos((m) => new Map([...m].filter(([id]) => ids.has(id))));
-      }
+      setTodos((m) => reconcile(m, deleted.current, d.data.todos, before));
       if (mem.ok) setMembers(new Map(mem.data.map((x) => [x.id, x])));
     }
 
@@ -75,10 +65,7 @@ export default function ListView({ listId }: { listId: string }) {
       onListDeleted: () => { unsub(); leave(); },
       onStatus: (st: ChannelStatus) => {
         setLive(st === "SUBSCRIBED");
-        if (st !== "SUBSCRIBED") { wasDown = true; return; }
-        void refresh(!first && wasDown);
-        first = false;
-        wasDown = false;
+        if (st === "SUBSCRIBED") void refresh();
       },
     });
     return unsub;
@@ -93,8 +80,11 @@ export default function ListView({ listId }: { listId: string }) {
 
   async function onAdd(e: FormEvent) {
     e.preventDefault();
+    if (adding) return;
     setError("");
+    setAdding(true);
     const r = await addTodo(db, listId, title);
+    setAdding(false);
     if (!r.ok) return fail(r.error);
     upsert(r.data);
     setTitle("");
@@ -106,7 +96,7 @@ export default function ListView({ listId }: { listId: string }) {
     setTodos((m) => new Map(m).set(t.id, next));
     void call.then((r) => {
       if (r.ok) upsert(r.data);
-      else { setTodos((m) => (m.has(t.id) ? new Map(m).set(t.id, t) : m)); fail(r.error); }
+      else { setTodos((m) => rollback(m, deleted.current, t, next)); fail(r.error); }
     });
   }
   const onToggle = (t: Todo, done: boolean) => optimistic(t, { ...t, done }, toggleTodo(db, t.id, done));
@@ -116,8 +106,8 @@ export default function ListView({ listId }: { listId: string }) {
     setError("");
     setTodos((m) => { const n = new Map(m); n.delete(t.id); return n; });
     const r = await deleteTodo(db, t.id);
-    if (r.ok) deleted.current.add(t.id);
-    else { setTodos((m) => new Map(m).set(t.id, t)); fail(r.error); }
+    if (r.ok || r.error.kind === "NotFound") remove(t.id); // already gone elsewhere counts as success
+    else { setTodos((m) => restoreDeleted(m, deleted.current, t)); fail(r.error); }
   }
 
   function closeShare() {
@@ -145,10 +135,10 @@ export default function ListView({ listId }: { listId: string }) {
       {!canEdit && <p className={s.muted}>You have view-only access to this list.</p>}
       {canEdit && (
         <form onSubmit={onAdd} className={s.row}>
-          <label htmlFor="new-todo" style={{ position: "absolute", left: "-9999px" }}>New todo</label>
+          <label htmlFor="new-todo" className={s.srOnly}>New todo</label>
           <input id="new-todo" className={s.grow} placeholder="Add a todo" required maxLength={500}
             value={title} onChange={(e) => setTitle(e.target.value)} />
-          <button type="submit">Add</button>
+          <button type="submit" disabled={adding}>Add</button>
         </form>
       )}
       <div aria-live="polite">{error && <p role="alert" className={s.error}>{error}</p>}</div>

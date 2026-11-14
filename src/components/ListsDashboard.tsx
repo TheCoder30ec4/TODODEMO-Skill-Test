@@ -14,14 +14,15 @@ export default function ListsDashboard() {
   const [lists, setLists] = useState<ListWithRole[] | null>(null);
   const [title, setTitle] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).has("revoked")) {
-      setNotice("That list is no longer available.");
-    }
     listLists(db).then((r) => {
-      if (r.ok) setLists(r.data);
+      if (r.ok) {
+        setLists(r.data);
+        if (new URLSearchParams(window.location.search).has("revoked")) setNotice("That list is no longer available.");
+      }
       else if (r.error.kind === "Unauthenticated") router.replace("/login");
       else { setError(r.error.message); setLists([]); }
     });
@@ -29,8 +30,11 @@ export default function ListsDashboard() {
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
+    if (busy) return;
     setError("");
+    setBusy(true);
     const r = await createList(db, title);
+    setBusy(false);
     if (!r.ok) return setError(r.error.message);
     setLists((l) => [r.data, ...(l ?? [])]);
     setTitle("");
@@ -58,10 +62,10 @@ export default function ListsDashboard() {
       </div>
       {notice && <p role="status" className={s.notice}>{notice}</p>}
       <form onSubmit={onCreate} className={s.row}>
-        <label htmlFor="new-list" className="sr-only" style={{ position: "absolute", left: "-9999px" }}>New list title</label>
+        <label htmlFor="new-list" className={s.srOnly}>New list title</label>
         <input id="new-list" className={s.grow} placeholder="New list title" required maxLength={200}
           value={title} onChange={(e) => setTitle(e.target.value)} />
-        <button type="submit">Create list</button>
+        <button type="submit" disabled={busy}>Create list</button>
       </form>
       {error && <p role="alert" className={s.error}>{error}</p>}
       {lists === null ? <p className={s.muted}>Loading...</p> : lists.length === 0 ? (

@@ -25,7 +25,7 @@ export default function TodoItem({ todo, canEdit, onToggle, onRename, onDelete }
     wasEditing.current = editing;
   }, [editing]);
 
-  // Viewer downgrade while editing closes the editor.
+  useEffect(() => { if (!canEdit) setEditing(false); }, [canEdit]);
   const active = editing && canEdit;
 
   function save(e: FormEvent) {
@@ -42,7 +42,7 @@ export default function TodoItem({ todo, canEdit, onToggle, onRename, onDelete }
     <li className={`${s.card} ${s.between}`}>
       {active ? (
         <form onSubmit={save} onKeyDown={onKey} className={`${s.row} ${s.grow}`}>
-          <label htmlFor={`edit-${todo.id}`} style={{ position: "absolute", left: "-9999px" }}>Edit todo title</label>
+          <label htmlFor={`edit-${todo.id}`} className={s.srOnly}>Edit todo title</label>
           <input id={`edit-${todo.id}`} ref={input} className={s.grow} value={draft} maxLength={500}
             onChange={(e) => setDraft(e.target.value)} />
           <button type="submit">Save</button>

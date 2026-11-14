@@ -1,0 +1,18 @@
+.row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.grow { flex: 1 1 10rem; }
+.between { display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.list { list-style: none; margin: 1rem 0; padding: 0; display: grid; gap: 0.5rem; }
+.card { border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.8rem; }
+.badge { font-size: 0.75rem; border: 1px solid var(--border); border-radius: 999px; padding: 0 0.5rem; color: var(--muted); }
+.muted { color: var(--muted); }
+.error { color: #b91c1c; margin: 0.5rem 0; }
+.ok { color: #15803d; margin: 0.5rem 0; }
+.notice { border: 1px solid var(--accent); border-radius: 6px; padding: 0.5rem 0.8rem; margin: 0.5rem 0; }
+.done { text-decoration: line-through; color: var(--muted); }
+.live { font-size: 0.8rem; color: var(--muted); }
+.dot { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--muted); margin-right: 0.3rem; }
+.dotOn { background: #16a34a; }
+.field { display: grid; gap: 0.25rem; margin: 0.75rem 0; }
+.dialog { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--fg); max-width: 32rem; width: calc(100% - 2rem); padding: 1rem; }
+.dialog::backdrop { background: rgba(0, 0, 0, 0.5); }
+@media (prefers-color-scheme: dark) { .error { color: #f87171; } .ok { color: #4ade80; } }

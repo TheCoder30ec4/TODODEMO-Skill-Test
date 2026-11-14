@@ -1,0 +1,99 @@
+name: deploy
+# Runs only after the `ci` workflow succeeded on a push to main (or by hand).
+# The `production` environment's required reviewers must approve before the job starts.
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      # Optional public production domain (repository variable, may be empty). No secrets at job level.
+      SMOKE_URL: ${{ vars.SMOKE_URL }}
+      VERCEL_VERSION: 65.8.0
+    steps:
+      - name: Manual runs deploy main only
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Manual deploys are allowed from main only (selected: $GITHUB_REF). Re-run with branch main."
+          exit 1
+      - uses: actions/checkout@v7.0.1
+        with:
+          # the commit CI validated (workflow_dispatch falls back to the selected ref)
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22
+      - name: Install Vercel CLI (no token, no install scripts)
+        run: |
+          npm install --prefix "$RUNNER_TEMP/vercel-cli" --no-save --ignore-scripts "vercel@$VERCEL_VERSION"
+          echo "VERCEL_BIN=$RUNNER_TEMP/vercel-cli/node_modules/.bin/vercel" >> "$GITHUB_ENV"
+      - name: Preflight (secrets present)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          missing=""
+          [ -n "$VERCEL_TOKEN" ] || missing="$missing VERCEL_TOKEN"
+          [ -n "$VERCEL_ORG_ID" ] || missing="$missing VERCEL_ORG_ID"
+          [ -n "$VERCEL_PROJECT_ID" ] || missing="$missing VERCEL_PROJECT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing secrets on the production environment:$missing. See docs/DEPLOY.md."
+            exit 1
+          fi
+      - name: Pull Vercel settings
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        # token is read from the VERCEL_TOKEN env var
+        run: $VERCEL_BIN pull --yes --environment=production
+      # No token here: the build runs project install/build scripts and only needs the pulled .vercel files.
+      - name: Build
+        run: $VERCEL_BIN build --prod
+      - name: Deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          url=$("$VERCEL_BIN" deploy --prebuilt --prod)
+          case "$url" in
+            https://*[[:space:]]*|*$'\n'*|"") echo "::error::Unexpected deploy output (not a single https URL)"; exit 1 ;;
+            https://*) ;;
+            *) echo "::error::Unexpected deploy output (not a single https URL)"; exit 1 ;;
+          esac
+          echo "Deployed: $url"
+          echo "DEPLOY_URL=$url" >> "$GITHUB_ENV"
+      - name: Smoke test
+        run: |
+          # Public production domain when SMOKE_URL is set, else the deployment URL (may be protected).
+          target="${SMOKE_URL:-$DEPLOY_URL}"
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            code=$(curl -sS -L -o /dev/null -w '%{http_code}' --max-time 15 "$target" || true)
+            echo "GET $target -> HTTP $code (try $i)"
+            [ "$code" = "200" ] && exit 0
+            if [ -z "$SMOKE_URL" ] && { [ "$code" = "401" ] || [ "$code" = "403" ]; }; then
+              echo "::error::Deployment URL is protected by Vercel Deployment Protection (HTTP $code). The deploy itself went live. Set repository variable SMOKE_URL to your public production domain. See docs/DEPLOY.md."
+              exit 1
+            fi
+            sleep 10
+          done
+          exit 1

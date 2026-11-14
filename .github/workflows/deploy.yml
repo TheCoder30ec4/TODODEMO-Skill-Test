@@ -23,14 +23,15 @@ jobs:
     timeout-minutes: 20
     environment: production
     env:
-      # Environment secrets: only released once a `production` reviewer approves this job.
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      # Optional extra check of your public alias (repository variable, may be empty).
+      # Optional public production domain (repository variable, may be empty). No secrets at job level.
       SMOKE_URL: ${{ vars.SMOKE_URL }}
-      VERCEL_CLI: vercel@65.16.0
+      VERCEL_CLI: vercel@65.8.0
     steps:
+      - name: Manual runs deploy main only
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Manual deploys are allowed from main only (selected: $GITHUB_REF). Re-run with branch main."
+          exit 1
       - uses: actions/checkout@v7.0.1
         with:
           # the commit CI validated (workflow_dispatch falls back to the selected ref)
@@ -40,6 +41,10 @@ jobs:
         with:
           node-version: 22
       - name: Preflight (secrets present)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
           missing=""
           [ -n "$VERCEL_TOKEN" ] || missing="$missing VERCEL_TOKEN"
@@ -50,25 +55,40 @@ jobs:
             exit 1
           fi
       - name: Pull Vercel settings
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: npx --yes "$VERCEL_CLI" pull --yes --environment=production --token="$VERCEL_TOKEN"
+      # No token here: the build runs project install/build scripts and only needs the pulled .vercel files.
       - name: Build
-        run: npx --yes "$VERCEL_CLI" build --prod --token="$VERCEL_TOKEN"
+        run: npx --yes "$VERCEL_CLI" build --prod
       - name: Deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
           url=$(npx --yes "$VERCEL_CLI" deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+          case "$url" in
+            https://*[[:space:]]*|*$'\n'*|"") echo "::error::Unexpected deploy output (not a single https URL)"; exit 1 ;;
+            https://*) ;;
+            *) echo "::error::Unexpected deploy output (not a single https URL)"; exit 1 ;;
+          esac
           echo "Deployed: $url"
           echo "DEPLOY_URL=$url" >> "$GITHUB_ENV"
       - name: Smoke test
         run: |
-          # fails unless every checked URL answers HTTP 200 (retries up to ~2 min)
-          check() {
-            for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
-              code=$(curl -sS -L -o /dev/null -w '%{http_code}' --max-time 15 "$1" || true)
-              echo "GET $1 -> HTTP $code (try $i)"
-              [ "$code" = "200" ] && return 0
-              sleep 10
-            done
-            return 1
-          }
-          check "$DEPLOY_URL"
-          if [ -n "$SMOKE_URL" ]; then check "$SMOKE_URL"; fi
+          # Public production domain when SMOKE_URL is set, else the deployment URL (may be protected).
+          target="${SMOKE_URL:-$DEPLOY_URL}"
+          for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+            code=$(curl -sS -L -o /dev/null -w '%{http_code}' --max-time 15 "$target" || true)
+            echo "GET $target -> HTTP $code (try $i)"
+            [ "$code" = "200" ] && exit 0
+            if [ -z "$SMOKE_URL" ] && { [ "$code" = "401" ] || [ "$code" = "403" ]; }; then
+              echo "::error::Deployment URL is protected by Vercel Deployment Protection (HTTP $code). The deploy itself went live. Set repository variable SMOKE_URL to your production domain (or relax protection). See docs/DEPLOY.md."
+              exit 1
+            fi
+            sleep 10
+          done
+          exit 1

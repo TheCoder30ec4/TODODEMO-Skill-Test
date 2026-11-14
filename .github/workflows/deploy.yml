@@ -25,7 +25,7 @@ jobs:
     env:
       # Optional public production domain (repository variable, may be empty). No secrets at job level.
       SMOKE_URL: ${{ vars.SMOKE_URL }}
-      VERCEL_CLI: vercel@65.8.0
+      VERCEL_VERSION: 65.8.0
     steps:
       - name: Manual runs deploy main only
         if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
@@ -40,6 +40,10 @@ jobs:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
+      - name: Install Vercel CLI (no token, no install scripts)
+        run: |
+          npm install --prefix "$RUNNER_TEMP/vercel-cli" --no-save --ignore-scripts "vercel@$VERCEL_VERSION"
+          echo "VERCEL_BIN=$RUNNER_TEMP/vercel-cli/node_modules/.bin/vercel" >> "$GITHUB_ENV"
       - name: Preflight (secrets present)
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -59,17 +63,17 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-        run: npx --yes "$VERCEL_CLI" pull --yes --environment=production --token="$VERCEL_TOKEN"
+        run: "$VERCEL_BIN" pull --yes --environment=production   # token via VERCEL_TOKEN env
       # No token here: the build runs project install/build scripts and only needs the pulled .vercel files.
       - name: Build
-        run: npx --yes "$VERCEL_CLI" build --prod
+        run: "$VERCEL_BIN" build --prod
       - name: Deploy
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
-          url=$(npx --yes "$VERCEL_CLI" deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+          url=$("$VERCEL_BIN" deploy --prebuilt --prod)
           case "$url" in
             https://*[[:space:]]*|*$'\n'*|"") echo "::error::Unexpected deploy output (not a single https URL)"; exit 1 ;;
             https://*) ;;
@@ -86,7 +90,7 @@ jobs:
             echo "GET $target -> HTTP $code (try $i)"
             [ "$code" = "200" ] && exit 0
             if [ -z "$SMOKE_URL" ] && { [ "$code" = "401" ] || [ "$code" = "403" ]; }; then
-              echo "::error::Deployment URL is protected by Vercel Deployment Protection (HTTP $code). The deploy itself went live. Set repository variable SMOKE_URL to your production domain (or relax protection). See docs/DEPLOY.md."
+              echo "::error::Deployment URL is protected by Vercel Deployment Protection (HTTP $code). The deploy itself went live. Set repository variable SMOKE_URL to your public production domain. See docs/DEPLOY.md."
               exit 1
             fi
             sleep 10

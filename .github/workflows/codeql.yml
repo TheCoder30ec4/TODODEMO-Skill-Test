@@ -1,0 +1,35 @@
+name: codeql
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 4 * * 1"
+permissions:
+  contents: read
+concurrency:
+  group: codeql-${{ github.ref }}
+  # PRs: a new push cancels the PR's running scan. main (push and schedule share this group): a running
+  # scan is never cancelled, but GitHub keeps only one pending run per group, so an older queued run is
+  # cancelled in favour of the newest one, which scans the latest main.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  codeql:
+    name: codeql
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      # Both languages are interpreted, so CodeQL analyses them in build mode `none` (no build). The
+      # `build-mode` input is only accepted with one language per job (a matrix), which would rename
+      # the check to `codeql (<lang>)`; the check must stay exactly `codeql`, so the mode stays implicit.
+      - uses: github/codeql-action/init@v4.39.3
+        with:
+          languages: javascript-typescript,actions
+      - uses: github/codeql-action/analyze@v4.39.3

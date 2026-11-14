@@ -4,7 +4,7 @@ Shareable, realtime to-do lists. Create a list, share it with others by email, a
 
 ## Prerequisites
 
-- Node.js 22 or newer (`engines` requires `>=22`)
+- Node.js 22.x (`engines.node` is `22.x`; see `.nvmrc`). Newer majors such as 24 print an engine warning on `npm ci`, which is intended.
 - A Supabase project (hosted, or local via the Supabase CLI)
 
 ## Local setup
@@ -32,6 +32,7 @@ Shareable, realtime to-do lists. Create a list, share it with others by email, a
 - `src/` - the Next.js app (`src/app`) and shared code (`src/lib`)
 - `supabase/` - SQL migrations and `tests/verify.sql`
 - `docs/` - operational docs
+- `vercel.json` - security headers; turns off Vercel's Git deployments so deploys go only through the approval-gated GitHub workflow
 
 ## How sharing works
 
@@ -44,4 +45,6 @@ Clients subscribe to Supabase Realtime `postgres_changes` for the list they have
 ## Docs
 
 - [docs/DATABASE.md](docs/DATABASE.md) - schema, migration, verification, auth settings
-- `docs/DEPLOY.md` - Vercel deployment (coming in a later task)
+- [docs/DEPLOY.md](docs/DEPLOY.md) - Vercel deployment
+- [docs/SECURITY_REVIEW.md](docs/SECURITY_REVIEW.md) - security review
+- [SECURITY.md](SECURITY.md) - security policy

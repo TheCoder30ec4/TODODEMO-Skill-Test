@@ -58,6 +58,9 @@ export const toggleTodo = (db: Db, todoId: string, done: boolean): Promise<Resul
   guard(async () => {
     const u = await requireUser(db);
     if (!u.ok) return u;
+    if (typeof done !== "boolean") {
+      return fail({ kind: "InvalidInput", message: "done must be a boolean", field: "done" });
+    }
     return editTodo(db, todoId, () => db.from("todos").update({ done }).eq("id", todoId).select(), toTodo);
   });
 

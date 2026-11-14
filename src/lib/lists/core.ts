@@ -29,7 +29,7 @@ export function mapPg(e: NonNullable<PgError>): AppError {
     case "22P02":
       return { kind: "NotFound", message: "Not found" };
     case "23514":
-      return /email/i.test(`${msg} ${e.details ?? ""}`)
+      return /list_members_email/i.test(msg) // constraint name appears in the message
         ? { kind: "InvalidEmail", message: "Invalid email address" }
         : { kind: "InvalidInput", message: "Invalid input" };
     case "42501":
@@ -57,8 +57,13 @@ export async function guard<T>(fn: () => Promise<Result<T>>): Promise<Result<T>>
 
 export async function requireUser(db: Db): Promise<Result<User>> {
   const { data, error } = await db.auth.getUser();
-  if (error || !data?.user) return fail({ kind: "Unauthenticated", message: "Sign in required" });
-  return ok(data.user);
+  if (data?.user) return ok(data.user);
+  const noSession = !error || error.name === "AuthSessionMissingError" || /session missing|no session/i.test(error.message);
+  return fail(
+    noSession
+      ? { kind: "Unauthenticated", message: "Sign in required" }
+      : { kind: "Unknown", message: error.message, cause: error },
+  );
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -66,7 +71,7 @@ export const isUuid = (s: unknown): s is string => typeof s === "string" && UUID
 
 export function checkTitle(raw: string, max: number): Result<string> {
   const t = typeof raw === "string" ? raw.trim() : "";
-  if (!t || t.length > max) {
+  if (!t || Array.from(t).length > max) { // code points, matches char_length()
     return fail({ kind: "InvalidInput", message: `Title must be 1-${max} characters`, field: "title" });
   }
   return ok(t);

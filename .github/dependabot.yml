@@ -1,9 +1,21 @@
+# Major-version bumps are ignored for npm: they are breaking (Next, ESLint,
+# Vitest, @types/node) and are upgraded deliberately by hand, not by bot PRs.
+# GitHub Actions majors are pinned on purpose and Dependabot should still propose them.
 version: 2
 updates:
   - package-ecosystem: "npm"
     directory: "/"
     schedule:
       interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

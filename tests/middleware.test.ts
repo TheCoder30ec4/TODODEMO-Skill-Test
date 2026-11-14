@@ -4,11 +4,13 @@ import { NextRequest } from "next/server";
 type SetAll = (c: { name: string; value: string; options?: object }[], h: Record<string, string>) => void;
 const state = vi.hoisted(() => ({
   setAll: undefined as undefined | ((...a: never[]) => void),
+  args: undefined as undefined | { url: string; key: string; getAll: () => { name: string; value: string }[] },
   getUser: (async () => ({})) as () => Promise<unknown>,
 }));
 vi.mock("@supabase/ssr", () => ({
-  createServerClient: (_u: string, _k: string, o: { cookies: { setAll: SetAll } }) => {
+  createServerClient: (url: string, key: string, o: { cookies: { setAll: SetAll; getAll: () => { name: string; value: string }[] } }) => {
     state.setAll = o.cookies.setAll as never;
+    state.args = { url, key, getAll: o.cookies.getAll };
     return { auth: { getUser: () => state.getUser() } };
   },
 }));
@@ -18,8 +20,8 @@ const req = () => new NextRequest("http://localhost/", { headers: { cookie: "kee
 const CACHE = { "cache-control": "private, no-cache, no-store, must-revalidate, max-age=0", expires: "0", pragma: "no-cache" };
 const setAll = (c: Parameters<SetAll>[0], h: Parameters<SetAll>[1]) => (state.setAll as unknown as SetAll)(c, h);
 
-beforeEach(() => { state.setAll = undefined; });
-afterEach(() => vi.restoreAllMocks());
+beforeEach(() => { state.setAll = undefined; state.args = undefined; });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe("middleware", () => {
   it("headers passed to setAll end up on the returned response, with the cookie", async () => {
@@ -72,5 +74,43 @@ describe("middleware", () => {
         expect(String(a)).not.toMatch(/SECRET|anon-key|eyJ/);
       }
     }
+  });
+
+  it("createServerClient gets (url, anonKey) in that order from the env (W05)", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://proj.supabase.co");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "anon-key-value");
+    state.getUser = async () => ({});
+    await middleware(req());
+    expect(state.args).toMatchObject({ url: "https://proj.supabase.co", key: "anon-key-value" });
+  });
+  it("cookies.getAll reads the incoming request's cookies (W03)", async () => {
+    state.getUser = async () => ({});
+    const r = new NextRequest("http://localhost/", { headers: { cookie: "sb-a=1; sb-b=2" } });
+    await middleware(r);
+    expect(state.args!.getAll()).toEqual(r.cookies.getAll());
+    expect(state.args!.getAll().map((c) => [c.name, c.value])).toEqual([["sb-a", "1"], ["sb-b", "2"]]);
+  });
+  it("setAll forwards cookie OPTIONS to the response Set-Cookie (W04)", async () => {
+    state.getUser = async () => {
+      setAll([{ name: "sb", value: "v", options: { path: "/app", maxAge: 3600, httpOnly: true, sameSite: "lax", secure: true } }], CACHE);
+      return {};
+    };
+    const res = await middleware(req());
+    const sc = res.headers.get("set-cookie") ?? "";
+    expect(sc).toMatch(/Path=\/app/);
+    expect(sc).toMatch(/Max-Age=3600/);
+    expect(sc).toMatch(/HttpOnly/i);
+    expect(sc).toMatch(/SameSite=lax/i);
+    expect(sc).toMatch(/Secure/i);
+  });
+  it("several cookies in one setAll all reach the response AND the forwarded request (W02)", async () => {
+    state.getUser = async () => {
+      setAll([{ name: "c1", value: "1" }, { name: "c2", value: "2" }, { name: "c3", value: "3" }], CACHE);
+      return {};
+    };
+    const res = await middleware(req());
+    expect(["c1", "c2", "c3"].map((n) => res.cookies.get(n)?.value)).toEqual(["1", "2", "3"]);
+    const fwd = res.headers.get("x-middleware-request-cookie") ?? "";
+    for (const kv of ["c1=1", "c2=2", "c3=3", "keep=1"]) expect(fwd).toContain(kv);
   });
 });

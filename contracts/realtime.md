@@ -6,7 +6,7 @@ Supabase Realtime `postgres_changes`. The tables in publication `supabase_realti
 
 Each `subscribeToList` call creates its own channel, named `list:{listId}:{n}`. `n` is a unique suffix for that subscription, such as a module-level monotonic counter, and is never reused across calls or mounts. `subscribeToList` (`@/lib/lists`) creates and owns the channel; the UI never builds channels itself. supabase-js passes the session JWT automatically.
 
-The suffix is required. If a channel name is reused, `db.channel(name)` returns the existing channel, and `removeChannel` finishes asynchronously. So a second subscribe while the first channel is still joining or leaving throws "cannot add postgres_changes callbacks ... after subscribe()", or never reaches `SUBSCRIBED`. React StrictMode double-mounts and quick remounts hit exactly this case (reproduced by the T5 review with `@supabase/realtime-js` 2.119.0).
+The suffix is required. Reusing a channel name makes `db.channel(name)` return the existing channel, and adding `postgres_changes` callbacks to a channel after `subscribe()` throws "cannot add postgres_changes callbacks ... after subscribe()". With `@supabase/realtime-js` 2.119.0, reviewers' probe showed this happens when a second subscribe arrives while the first channel is still joining. A unique name per subscription avoids that, and also keeps React StrictMode double-mounts independent of each other.
 
 **Never throws.** `subscribeToList` wraps all channel setup (`db.channel`, `.on(...)`, `.subscribe(...)`) in try/catch. Any failure is reported as `onStatus('CHANNEL_ERROR', { kind: 'Unknown', message, cause })`, and a no-op-safe `Unsubscribe` is still returned. Failures of the own-member-id re-check (below) are also reported via `onStatus('CHANNEL_ERROR', error)`.
 
@@ -56,7 +56,7 @@ State per list view: `list: ListWithRole`, `todos: Map<id, Todo>`, `members: Map
 
 - `Unsubscribe` sets a closed flag, then calls `db.removeChannel(channel)` without awaiting it. It is idempotent: a second call does nothing.
 - **No handler fires after `Unsubscribe` returns.** Every callback, including the async own-member-id re-check and status callbacks from the channel teardown, checks the closed flag first and drops the event.
-- Call it in the `useEffect` cleanup of the component that subscribed, and re-subscribe when `listId` changes. The new subscription gets a new suffix, so it never collides with the old channel that is still leaving.
+- Call it in the `useEffect` cleanup of the component that subscribed, and re-subscribe when `listId` changes. The new subscription gets a new suffix, so it never collides with the old channel that is still joining or leaving.
 - Each mounted view owns exactly one subscription. Do not subscribe from server components.
 - On sign-out, call `db.removeAllChannels()` before `auth.signOut()`.
 

@@ -64,10 +64,12 @@ jobs:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         # token is read from the VERCEL_TOKEN env var
-        run: $VERCEL_BIN pull --yes --environment=production
+        run: |
+          "$VERCEL_BIN" pull --yes --environment=production
       # No token here: the build runs project install/build scripts and only needs the pulled .vercel files.
       - name: Build
-        run: $VERCEL_BIN build --prod
+        run: |
+          "$VERCEL_BIN" build --prod
       - name: Deploy
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}

@@ -80,6 +80,28 @@ describe("subscribeToList channel setup", () => {
   });
 });
 
+describe("channel reuse (realtime-js semantics)", () => {
+  it("the fake returns the existing channel for a reused name and throws on .on() after subscribe", () => {
+    const f = fakeDb();
+    const a = f.db.channel("same") as unknown as { on: (...a: unknown[]) => unknown; subscribe: (cb: () => void) => unknown };
+    a.on("postgres_changes", { event: "*", table: "t" }, () => {});
+    a.subscribe(() => {});
+    const b = f.db.channel("same");
+    expect(b).toBe(a);
+    expect(() => (b as unknown as typeof a).on("postgres_changes", { event: "*", table: "t" }, () => {})).toThrow(/after subscribe/);
+  });
+  it("subscribing twice to one list while the first is still joining gets 2 distinct channels, no onStatus error", () => {
+    const f = fakeDb();
+    const h1 = handlers(), h2 = handlers();
+    subscribeToList(f.db, LIST, h1);
+    f.channels[0].status("TIMED_OUT"); // first still not SUBSCRIBED
+    subscribeToList(f.db, LIST, h2);
+    expect(f.channels).toHaveLength(2);
+    expect(h2.onStatus).not.toHaveBeenCalled();
+    expect(h1.onStatus).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("status + own member re-check", () => {
   it("forwards status (and error) to onStatus", () => {
     const f = fakeDb();
@@ -202,8 +224,9 @@ describe("unsubscribe", () => {
     expect(f.removed).toEqual([ch]);
   });
   it("no handler fires after unsubscribe (events, statuses)", async () => {
-    const { h, unsub, ch } = await setup();
+    const { f, h, unsub, ch } = await setup();
     const before = allCalls(h);
+    const queries = f.on("lists").length;
     unsub();
     ch.emit("lists", "UPDATE", { new: listRow("owner") });
     ch.emit("lists", "DELETE", { old: { id: LIST } });
@@ -215,12 +238,13 @@ describe("unsubscribe", () => {
     ch.status("CLOSED"); ch.status("SUBSCRIBED");
     await flush();
     expect(allCalls(h)).toBe(before);
+    expect(f.on("lists")).toHaveLength(queries); // a late SUBSCRIBED must not even run the re-check
   });
   it("removeChannel rejecting does not surface", async () => {
-    const f = fakeDb();
-    f.db.removeChannel = () => Promise.reject(new Error("x"));
+    const f = fakeDb({ removeChannelRejects: true });
     const unsub = subscribeToList(f.db, LIST, {});
     expect(() => unsub()).not.toThrow();
-    await flush();
+    await flush(); // an unhandled rejection would fail the run
+    expect(f.removed).toEqual([f.channels[0]]);
   });
 });

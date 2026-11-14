@@ -1,13 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { shareList, changeRole, unshareList, listMembers } from "@/lib/sharing";
-import { fakeDb, listRow, memberRow, LIST } from "./helpers/fakeDb";
+import { fakeDb, listRow, memberRow, LIST, GATE } from "./helpers/fakeDb";
 
 describe("shareList", () => {
   it("success: email trimmed + lower-cased, role passed, mapped member", async () => {
     const f = fakeDb().queue("lists", { data: listRow("owner") }).queue("list_members", { data: [memberRow({ email: "bob@x.co", role: "editor" })] });
     const r = await shareList(f.db, LIST, "  Bob@X.CO ", "editor");
     expect(r).toMatchObject({ ok: true, data: { email: "bob@x.co", role: "editor", listId: LIST, addedBy: expect.any(String) } });
-    expect(f.on("list_members")[0].ops[0]).toEqual(["insert", [{ list_id: LIST, email: "bob@x.co", role: "editor" }]]);
+    expect(f.chains("lists")).toEqual([GATE]);
+    expect(f.chains("list_members")).toEqual([`insert({"list_id":"${LIST}","email":"bob@x.co","role":"editor"}).select()`]);
   });
   it.each(["", "nope", "a@b", "a b@c.co", "@x.co", "a@.co "])("invalid email %j -> InvalidEmail before any DB call", async (e) => {
     const f = fakeDb();
@@ -56,10 +57,8 @@ describe("changeRole", () => {
   it("success updates role by list_id + lower-cased email", async () => {
     const f = fakeDb().queue("lists", { data: listRow("owner") }).queue("list_members", { data: [memberRow({ role: "editor" })] });
     expect(await changeRole(f.db, LIST, " A@B.co", "editor")).toMatchObject({ ok: true, data: { role: "editor" } });
-    const ops = f.on("list_members")[0].ops;
-    expect(ops[0]).toEqual(["update", [{ role: "editor" }]]);
-    expect(ops).toContainEqual(["eq", ["email", "a@b.co"]]);
-    expect(ops).toContainEqual(["eq", ["list_id", LIST]]);
+    expect(f.chains("lists")).toEqual([GATE]);
+    expect(f.chains("list_members")).toEqual([`update({"role":"editor"}).eq("list_id","${LIST}").eq("email","a@b.co").select()`]);
   });
   it("validation: InvalidEmail, role InvalidInput", async () => {
     const f = fakeDb();
@@ -82,7 +81,8 @@ describe("unshareList", () => {
   it("success", async () => {
     const f = fakeDb().queue("lists", { data: listRow("owner") }).queue("list_members", { data: [memberRow()] });
     expect(await unshareList(f.db, LIST, "A@b.co")).toEqual({ ok: true, data: undefined });
-    expect(f.on("list_members")[0].ops).toContainEqual(["eq", ["email", "a@b.co"]]);
+    expect(f.chains("lists")).toEqual([GATE]);
+    expect(f.chains("list_members")).toEqual([`delete().eq("list_id","${LIST}").eq("email","a@b.co").select()`]);
   });
   it("InvalidEmail; non-member email -> NotFound; non-owner -> Forbidden; invisible -> NotFound", async () => {
     const f = fakeDb().queue("lists", { data: listRow("owner") }, { data: listRow("owner") }, { data: listRow("viewer") }, { data: null }).queue("list_members", { data: [] });
@@ -93,12 +93,26 @@ describe("unshareList", () => {
   });
 });
 
+describe("unshareList access re-check after 0 rows", () => {
+  it("role downgraded to viewer -> Forbidden; access lost -> NotFound; still owner -> NotFound", async () => {
+    for (const [again, kind] of [["viewer", "Forbidden"], [null, "NotFound"], ["owner", "NotFound"]] as const) {
+      const f = fakeDb()
+        .queue("lists", { data: listRow("owner") }, { data: again ? listRow(again) : null })
+        .queue("list_members", { data: [] });
+      expect(await unshareList(f.db, LIST, "a@b.co")).toMatchObject({ error: { kind } });
+      expect(f.chains("lists")).toEqual([GATE, GATE]);
+      expect(f.chains("list_members")).toEqual([`delete().eq("list_id","${LIST}").eq("email","a@b.co").select()`]);
+    }
+  });
+});
+
 describe("listMembers", () => {
   it("success maps rows, ordered by created_at asc", async () => {
     const f = fakeDb().queue("lists", { data: listRow("viewer") }).queue("list_members", { data: [memberRow(), memberRow({ id: "m2" })] });
     const r = await listMembers(f.db, LIST);
     expect(r.ok && r.data).toHaveLength(2);
-    expect(f.on("list_members")[0].ops).toContainEqual(["order", ["created_at", { ascending: true }]]);
+    expect(f.chains("lists")).toEqual([GATE]);
+    expect(f.chains("list_members")).toEqual([`select().eq("list_id","${LIST}").order("created_at",{"ascending":true})`]);
   });
   it("non-member / bad id -> NotFound; query error -> Unknown", async () => {
     const f = fakeDb().queue("lists", { data: listRow(null) }, { data: listRow("owner") }).queue("list_members", { error: { code: "XX" } });

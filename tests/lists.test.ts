@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createList, listLists, getList, deleteList } from "@/lib/lists";
-import { fakeDb, listRow, todoRow, LIST, UID, opNames } from "./helpers/fakeDb";
+import { fakeDb, listRow, todoRow, LIST, UID, GATE } from "./helpers/fakeDb";
 
 describe("auth (requireUser)", () => {
   it("no session (no error) -> Unauthenticated", async () => {
@@ -30,7 +30,7 @@ describe("createList", () => {
       ok: true,
       data: { id: LIST, ownerId: UID, title: "Groceries", createdAt: "2025-01-01T00:00:00Z", role: "owner", memberId: null },
     });
-    expect(f.calls[0].ops[0]).toEqual(["insert", [{ title: "Groceries" }]]);
+    expect(f.chains("lists")).toEqual(['insert({"title":"Groceries"}).select().single()']);
   });
   it.each([["", "empty"], ["   ", "blank"]])("%j (%s) -> InvalidInput title, no DB call", async (t) => {
     const f = fakeDb();
@@ -61,8 +61,7 @@ describe("listLists", () => {
     const f = fakeDb().queue("lists", { data: [listRow("owner"), listRow("editor")] });
     const r = await listLists(f.db);
     expect(r.ok && r.data.map((l) => [l.role, l.memberId])).toEqual([["owner", null], ["editor", expect.any(String)]]);
-    expect(f.calls[0].ops).toContainEqual(["order", ["created_at", { ascending: false }]]);
-    expect(f.calls[0].ops[0]).toEqual(["select", ["*, my_role, my_member_id"]]);
+    expect(f.chains("lists")).toEqual(['select("*, my_role, my_member_id").order("created_at",{"ascending":false})']);
   });
   it("null data -> empty array; DB error -> Unknown", async () => {
     const f = fakeDb().queue("lists", { data: null }, { error: { code: "XX", message: "m" } });
@@ -77,8 +76,11 @@ describe("getList", () => {
     const r = await getList(f.db, LIST);
     expect(r.ok && r.data.list.role).toBe("viewer");
     expect(r.ok && r.data.todos[0]).toMatchObject({ id: expect.any(String), listId: LIST, done: false, updatedAt: expect.any(String) });
-    const order = f.on("todos")[0].ops.filter((o) => o[0] === "order").map((o) => o[1][0]);
-    expect(order).toEqual(["position", "created_at", "id"]);
+    expect(f.chains("lists")).toEqual([GATE]);
+    // todos scoped to THIS list, sorted position, created_at, id
+    expect(f.chains("todos")).toEqual([
+      `select().eq("list_id","${LIST}").order("position",{"ascending":true}).order("created_at",{"ascending":true}).order("id",{"ascending":true})`,
+    ]);
   });
   it("non-uuid -> NotFound without DB call", async () => {
     const f = fakeDb();
@@ -100,7 +102,7 @@ describe("deleteList", () => {
   it("owner success", async () => {
     const f = fakeDb().queue("lists", { data: listRow("owner") }, { data: [listRow("owner")] });
     expect(await deleteList(f.db, LIST)).toEqual({ ok: true, data: undefined });
-    expect(opNames(f.calls[1])).toEqual(["delete", "eq", "select"]);
+    expect(f.chains("lists")).toEqual([GATE, `delete().eq("id","${LIST}").select()`]);
   });
   it("editor/viewer -> Forbidden (list visible, role too low), no delete issued", async () => {
     for (const role of ["editor", "viewer"]) {
@@ -116,7 +118,7 @@ describe("deleteList", () => {
   it("0 rows then re-check: access lost -> NotFound", async () => {
     const f = fakeDb().queue("lists", { data: listRow("owner") }, { data: [] }, { data: null });
     expect(await deleteList(f.db, LIST)).toMatchObject({ error: { kind: "NotFound" } });
-    expect(f.calls).toHaveLength(3);
+    expect(f.chains("lists")).toEqual([GATE, `delete().eq("id","${LIST}").select()`, GATE]);
   });
   it("0 rows then re-check: role downgraded -> Forbidden", async () => {
     const f = fakeDb().queue("lists", { data: listRow("owner") }, { data: [] }, { data: listRow("editor") });

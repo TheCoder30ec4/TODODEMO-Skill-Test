@@ -6,7 +6,7 @@ Please report vulnerabilities **privately**. Do not open a public issue, pull re
 
 1. Go to this repository's **Security** tab and choose **Report a vulnerability** (GitHub private vulnerability reporting). This opens a private security advisory that only the maintainers can see.
 2. Include what is affected (file, route, table or policy), steps to reproduce, the impact you expect, and any proof of concept. Never include real user data or live credentials.
-3. If the **Report a vulnerability** button is not shown, open a public issue titled "Security contact request" with **no details** of the problem, and a maintainer will set up a private channel.
+3. Fallback, only if you cannot use that button: open a public issue titled "Security contact request" with **no technical details**, and ask for a private channel. A maintainer then opens a draft security advisory and adds you to it as a collaborator, and you continue there.
 
 What to expect: an acknowledgement on the advisory, an assessment of severity, and a fix in a private fork of the advisory where needed. Please give us a reasonable time to ship a fix before any public disclosure. We will credit you in the advisory unless you ask us not to.
 

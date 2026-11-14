@@ -9,7 +9,9 @@ permissions:
   contents: read
 concurrency:
   group: codeql-${{ github.ref }}
-  # Only superseded PR runs are cancelled; main pushes and scheduled scans always finish.
+  # PRs: a new push cancels the PR's running scan. main (push and schedule share this group): a running
+  # scan is never cancelled, but GitHub keeps only one pending run per group, so an older queued run is
+  # cancelled in favour of the newest one, which scans the latest main.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   codeql:
@@ -24,7 +26,9 @@ jobs:
       - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
-      # javascript-typescript and actions are analysed without a build (build-mode: none).
+      # Both languages are interpreted, so CodeQL analyses them in build mode `none` (no build). The
+      # `build-mode` input is only accepted with one language per job (a matrix), which would rename
+      # the check to `codeql (<lang>)`; the check must stay exactly `codeql`, so the mode stays implicit.
       - uses: github/codeql-action/init@v4.39.3
         with:
           languages: javascript-typescript,actions

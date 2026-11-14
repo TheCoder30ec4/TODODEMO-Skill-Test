@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createList, listLists, getList, deleteList } from "@/lib/lists";
-import { fakeDb, listRow, todoRow, LIST, UID, GATE } from "./helpers/fakeDb";
+import { fakeDb, listRow, todoRow, listObj, todoObj, LIST, MEMBER, GATE } from "./helpers/fakeDb";
 
 describe("auth (requireUser)", () => {
   it("no session (no error) -> Unauthenticated", async () => {
@@ -26,10 +26,7 @@ describe("createList", () => {
   it("success: trims title, returns owner role, memberId null", async () => {
     const f = fakeDb().queue("lists", { data: listRow("owner", { title: "Groceries" }) });
     const r = await createList(f.db, "  Groceries  ");
-    expect(r).toEqual({
-      ok: true,
-      data: { id: LIST, ownerId: UID, title: "Groceries", createdAt: "2025-01-01T00:00:00Z", role: "owner", memberId: null },
-    });
+    expect(r).toEqual({ ok: true, data: { ...listObj({ title: "Groceries" }), role: "owner", memberId: null } });
     expect(f.chains("lists")).toEqual(['insert({"title":"Groceries"}).select().single()']);
   });
   it.each([["", "empty"], ["   ", "blank"]])("%j (%s) -> InvalidInput title, no DB call", async (t) => {
@@ -60,7 +57,10 @@ describe("listLists", () => {
   it("maps rows with role, orders by created_at desc", async () => {
     const f = fakeDb().queue("lists", { data: [listRow("owner"), listRow("editor")] });
     const r = await listLists(f.db);
-    expect(r.ok && r.data.map((l) => [l.role, l.memberId])).toEqual([["owner", null], ["editor", expect.any(String)]]);
+    expect(r).toEqual({
+      ok: true,
+      data: [{ ...listObj(), role: "owner", memberId: null }, { ...listObj(), role: "editor", memberId: MEMBER }],
+    });
     expect(f.chains("lists")).toEqual(['select("*, my_role, my_member_id").order("created_at",{"ascending":false})']);
   });
   it("null data -> empty array; DB error -> Unknown", async () => {
@@ -74,8 +74,7 @@ describe("getList", () => {
   it("success: list from gate row + todos", async () => {
     const f = fakeDb().queue("lists", { data: listRow("viewer") }).queue("todos", { data: [todoRow()] });
     const r = await getList(f.db, LIST);
-    expect(r.ok && r.data.list.role).toBe("viewer");
-    expect(r.ok && r.data.todos[0]).toMatchObject({ id: expect.any(String), listId: LIST, done: false, updatedAt: expect.any(String) });
+    expect(r).toEqual({ ok: true, data: { list: { ...listObj(), role: "viewer", memberId: MEMBER }, todos: [todoObj()] } });
     expect(f.chains("lists")).toEqual([GATE]);
     // todos scoped to THIS list, sorted position, created_at, id
     expect(f.chains("todos")).toEqual([

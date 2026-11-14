@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { subscribeToList } from "@/lib/lists";
 import type { ListSubscriptionHandlers } from "@contracts/types";
-import { fakeDb, listRow, todoRow, memberRow, LIST, TODO, MEMBER, OTHER } from "./helpers/fakeDb";
+import { fakeDb, listRow, todoRow, memberRow, todoObj, memberObj, listObj, LIST, TODO, MEMBER, OTHER } from "./helpers/fakeDb";
 
 const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
 const handlers = () => ({
@@ -90,6 +90,38 @@ describe("channel reuse (realtime-js semantics)", () => {
     expect(b).toBe(a);
     expect(() => (b as unknown as typeof a).on("postgres_changes", { event: "*", table: "t" }, () => {})).toThrow(/after subscribe/);
   });
+  it("joining/joined channels reject .on(); a closed one accepts it again (not 'after subscribe' for life)", () => {
+    const f = fakeDb();
+    const c = f.db.channel("x") as unknown as { on: (...a: unknown[]) => unknown; subscribe: (cb: () => void) => unknown };
+    const add = () => c.on("postgres_changes", { event: "*", table: "t" }, () => {});
+    add();
+    c.subscribe(() => {}); // joining
+    expect(add).toThrow(/after subscribe/);
+    f.channels[0].status("SUBSCRIBED"); // joined
+    expect(add).toThrow(/after subscribe/);
+    f.channels[0].status("CLOSED");
+    expect(add).not.toThrow();
+  });
+  it("resubscribing while the old channel is still leaving (connected socket): fresh channel, old one still registered until the leave ack", async () => {
+    const f = fakeDb({ connected: true }).queue("lists", { data: { my_role: "editor", my_member_id: MEMBER } });
+    const h1 = handlers(), h2 = handlers();
+    const unsub = subscribeToList(f.db, LIST, h1);
+    const old = f.channels[0];
+    old.status("SUBSCRIBED");
+    await flush();
+    unsub();
+    expect(old.state).toBe("leaving");
+    expect(f.db.channel(old.name)).toBe(old); // still in the registry during the leaving window
+    expect(() => subscribeToList(f.db, LIST, h2)).not.toThrow();
+    expect(f.channels).toHaveLength(2);
+    expect(f.channels[1].name).not.toBe(old.name);
+    expect(f.channels[1].regs).toHaveLength(8);
+    expect(h2.onStatus).not.toHaveBeenCalled();
+    f.ackLeave(old);
+    expect(old.state).toBe("closed");
+    old.status("CLOSED"); // late teardown status from the old channel
+    expect(h1.onStatus).toHaveBeenCalledTimes(1); // only the SUBSCRIBED from before unsubscribe
+  });
   it("subscribing twice to one list while the first is still joining gets 2 distinct channels, no onStatus error", () => {
     const f = fakeDb();
     const h1 = handlers(), h2 = handlers();
@@ -153,7 +185,7 @@ describe("event mapping", () => {
   it("lists UPDATE -> onListUpdate(List); lists DELETE only for this id -> onListDeleted", async () => {
     const { h, ch } = await setup();
     ch.emit("lists", "UPDATE", { new: listRow("owner", { title: "Renamed" }) });
-    expect(h.onListUpdate).toHaveBeenCalledWith({ id: LIST, ownerId: expect.any(String), title: "Renamed", createdAt: expect.any(String) });
+    expect(h.onListUpdate).toHaveBeenCalledWith(listObj({ title: "Renamed" }));
     ch.emit("lists", "DELETE", { old: { id: OTHER } });
     expect(h.onListDeleted).not.toHaveBeenCalled();
     ch.emit("lists", "DELETE", { old: { id: LIST } });
@@ -163,8 +195,7 @@ describe("event mapping", () => {
     const { h, ch } = await setup();
     ch.emit("todos", "INSERT", { new: todoRow() });
     ch.emit("todos", "UPDATE", { new: todoRow({ done: true }) });
-    expect(h.onTodoUpsert).toHaveBeenCalledTimes(2);
-    expect(h.onTodoUpsert.mock.calls[1][0]).toMatchObject({ id: TODO, listId: LIST, done: true, updatedAt: expect.any(String) });
+    expect(h.onTodoUpsert.mock.calls).toEqual([[todoObj()], [todoObj({ done: true })]]);
   });
   it("todos DELETE (id only, any list) -> onTodoDelete(id)", async () => {
     const { h, ch } = await setup();
@@ -174,7 +205,7 @@ describe("event mapping", () => {
   it("members INSERT -> onMemberUpsert only", async () => {
     const { h, ch } = await setup();
     ch.emit("list_members", "INSERT", { new: memberRow() });
-    expect(h.onMemberUpsert).toHaveBeenCalledTimes(1);
+    expect(h.onMemberUpsert.mock.calls).toEqual([[memberObj()]]);
     expect(h.onRoleChange).not.toHaveBeenCalled();
   });
   it("members UPDATE of own row -> onMemberUpsert then onRoleChange; other row -> no onRoleChange", async () => {
@@ -184,6 +215,7 @@ describe("event mapping", () => {
     h.onRoleChange.mockImplementation(() => order.push("role"));
     ch.emit("list_members", "UPDATE", { new: memberRow({ id: MEMBER, role: "editor" }) });
     expect(order).toEqual(["upsert", "role"]);
+    expect(h.onMemberUpsert).toHaveBeenCalledWith(memberObj({ role: "editor" }));
     expect(h.onRoleChange).toHaveBeenCalledWith("editor");
     ch.emit("list_members", "UPDATE", { new: memberRow({ id: OTHER, role: "viewer" }) });
     expect(h.onRoleChange).toHaveBeenCalledTimes(1);
@@ -207,7 +239,7 @@ describe("event mapping", () => {
     expect(JSON.stringify(h.onMemberDelete.mock.calls)).not.toContain("@");
   });
   it("missing optional handlers and throwing handlers never break the channel", async () => {
-    const f = fakeDb().queue("lists", { data: { my_role: "editor", my_member_id: MEMBER } });
+    const f = fakeDb();
     const h = handlers();
     h.onTodoUpsert.mockImplementation(() => { throw new Error("ui bug"); });
     subscribeToList(f.db, LIST, { onTodoUpsert: h.onTodoUpsert });

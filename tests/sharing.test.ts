@@ -1,12 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { shareList, changeRole, unshareList, listMembers } from "@/lib/sharing";
-import { fakeDb, listRow, memberRow, LIST, GATE } from "./helpers/fakeDb";
+import { fakeDb, listRow, memberRow, memberObj, LIST, GATE } from "./helpers/fakeDb";
 
 describe("shareList", () => {
   it("success: email trimmed + lower-cased, role passed, mapped member", async () => {
     const f = fakeDb().queue("lists", { data: listRow("owner") }).queue("list_members", { data: [memberRow({ email: "bob@x.co", role: "editor" })] });
     const r = await shareList(f.db, LIST, "  Bob@X.CO ", "editor");
-    expect(r).toMatchObject({ ok: true, data: { email: "bob@x.co", role: "editor", listId: LIST, addedBy: expect.any(String) } });
+    expect(r).toEqual({ ok: true, data: memberObj({ email: "bob@x.co", role: "editor" }) });
     expect(f.chains("lists")).toEqual([GATE]);
     expect(f.chains("list_members")).toEqual([`insert({"list_id":"${LIST}","email":"bob@x.co","role":"editor"}).select()`]);
   });
@@ -56,7 +56,7 @@ describe("shareList", () => {
 describe("changeRole", () => {
   it("success updates role by list_id + lower-cased email", async () => {
     const f = fakeDb().queue("lists", { data: listRow("owner") }).queue("list_members", { data: [memberRow({ role: "editor" })] });
-    expect(await changeRole(f.db, LIST, " A@B.co", "editor")).toMatchObject({ ok: true, data: { role: "editor" } });
+    expect(await changeRole(f.db, LIST, " A@B.co", "editor")).toEqual({ ok: true, data: memberObj({ role: "editor" }) });
     expect(f.chains("lists")).toEqual([GATE]);
     expect(f.chains("list_members")).toEqual([`update({"role":"editor"}).eq("list_id","${LIST}").eq("email","a@b.co").select()`]);
   });
@@ -110,7 +110,7 @@ describe("listMembers", () => {
   it("success maps rows, ordered by created_at asc", async () => {
     const f = fakeDb().queue("lists", { data: listRow("viewer") }).queue("list_members", { data: [memberRow(), memberRow({ id: "m2" })] });
     const r = await listMembers(f.db, LIST);
-    expect(r.ok && r.data).toHaveLength(2);
+    expect(r).toEqual({ ok: true, data: [memberObj(), memberObj({ id: "m2" })] });
     expect(f.chains("lists")).toEqual([GATE]);
     expect(f.chains("list_members")).toEqual([`select().eq("list_id","${LIST}").order("created_at",{"ascending":true})`]);
   });

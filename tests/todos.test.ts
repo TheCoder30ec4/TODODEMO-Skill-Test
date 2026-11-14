@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { addTodo, toggleTodo, updateTodo, deleteTodo, reorderTodos } from "@/lib/lists";
-import { fakeDb, listRow, todoRow, LIST, TODO, OTHER, GATE, TODO_LOOKUP } from "./helpers/fakeDb";
+import { fakeDb, listRow, todoRow, todoObj, LIST, TODO, OTHER, GATE, TODO_LOOKUP } from "./helpers/fakeDb";
 
 describe("addTodo", () => {
   it("position = max + 1, done false, trimmed title", async () => {
@@ -8,7 +8,7 @@ describe("addTodo", () => {
       .queue("lists", { data: listRow("editor") })
       .queue("todos", { data: { position: 4 } }, { data: [todoRow({ position: 5, title: "x" })] });
     const r = await addTodo(f.db, LIST, "  x ");
-    expect(r).toMatchObject({ ok: true, data: { position: 5, title: "x", listId: LIST } });
+    expect(r).toEqual({ ok: true, data: todoObj({ position: 5, title: "x" }) });
     expect(f.chains("lists")).toEqual([GATE]);
     expect(f.chains("todos")).toEqual([
       `select("position").eq("list_id","${LIST}").order("position",{"ascending":false}).limit(1).maybeSingle()`,
@@ -106,7 +106,7 @@ describe("toggleTodo", () => {
   it("sets the given value (idempotent, not a flip)", async () => {
     const f = fakeDb().queue("todos", { data: { list_id: LIST } }, { data: [todoRow({ done: false })] }).queue("lists", { data: listRow("owner") });
     const r = await toggleTodo(f.db, TODO, false);
-    expect(r).toMatchObject({ ok: true, data: { done: false } });
+    expect(r).toEqual({ ok: true, data: todoObj({ done: false }) });
     expect(f.chains("todos")[1]).toBe(`update({"done":false}).eq("id","${TODO}").select()`);
   });
   it.each([["true"], [1], [null], [undefined]])("non-boolean %j -> InvalidInput done", async (v) => {
@@ -119,7 +119,7 @@ describe("toggleTodo", () => {
 describe("updateTodo", () => {
   it("trims title and returns mapped todo", async () => {
     const f = fakeDb().queue("todos", { data: { list_id: LIST } }, { data: [todoRow({ title: "n" })] }).queue("lists", { data: listRow("editor") });
-    expect(await updateTodo(f.db, TODO, { title: " n " })).toMatchObject({ ok: true, data: { title: "n" } });
+    expect(await updateTodo(f.db, TODO, { title: " n " })).toEqual({ ok: true, data: todoObj({ title: "n" }) });
     expect(f.chains("todos")[1]).toBe(`update({"title":"n"}).eq("id","${TODO}").select()`);
   });
   it("invalid titles -> InvalidInput", async () => {

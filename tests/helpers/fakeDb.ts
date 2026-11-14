@@ -1,4 +1,5 @@
 // Deterministic fake Supabase client. No network. Responses are queued per table (or per rpc name).
+import { afterEach } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 export type Resp = { data?: unknown; error?: { code?: string; message?: string } | null };
@@ -11,38 +12,57 @@ export const TODO = "22222222-2222-4222-8222-222222222222";
 export const MEMBER = "33333333-3333-4333-8333-333333333333";
 export const OTHER = "44444444-4444-4444-8444-444444444444";
 
+// Every field has a DISTINCT value, so a mapper that reads the wrong column cannot pass.
+export const USER2 = "55555555-5555-4555-8555-555555555555";
+export const USER3 = "66666666-6666-4666-8666-666666666666";
+export const CREATED = "2025-01-01T00:00:00.000Z";
+export const UPDATED = "2025-02-03T04:05:06.000Z";
 export const listRow = (role: string | null, extra: Record<string, unknown> = {}) => ({
-  id: LIST, owner_id: UID, title: "L", created_at: "2025-01-01T00:00:00Z",
+  id: LIST, owner_id: USER2, title: "List title", created_at: CREATED,
   my_role: role, my_member_id: role === "owner" ? null : MEMBER, ...extra,
 });
 export const todoRow = (extra: Record<string, unknown> = {}) => ({
-  id: TODO, list_id: LIST, title: "T", done: false, position: 0, created_by: UID,
-  created_at: "2025-01-01T00:00:00Z", updated_at: "2025-01-01T00:00:00Z", ...extra,
+  id: TODO, list_id: LIST, title: "Todo title", done: false, position: 7, created_by: USER3,
+  created_at: CREATED, updated_at: UPDATED, ...extra,
 });
 export const memberRow = (extra: Record<string, unknown> = {}) => ({
-  id: MEMBER, list_id: LIST, email: "a@b.co", role: "viewer", added_by: UID,
-  created_at: "2025-01-01T00:00:00Z", ...extra,
+  id: MEMBER, list_id: LIST, email: "a@b.co", role: "viewer", added_by: USER2,
+  created_at: CREATED, ...extra,
+});
+// The camelCase objects the mappers must produce from the rows above.
+export const todoObj = (extra: Record<string, unknown> = {}) => ({
+  id: TODO, listId: LIST, title: "Todo title", done: false, position: 7, createdBy: USER3,
+  createdAt: CREATED, updatedAt: UPDATED, ...extra,
+});
+export const memberObj = (extra: Record<string, unknown> = {}) => ({
+  id: MEMBER, listId: LIST, email: "a@b.co", role: "viewer", addedBy: USER2, createdAt: CREATED, ...extra,
+});
+export const listObj = (extra: Record<string, unknown> = {}) => ({
+  id: LIST, ownerId: USER2, title: "List title", createdAt: CREATED, ...extra,
 });
 
 export type FakeChannel = ReturnType<typeof makeChannel>;
 function makeChannel(name: string, opts: { onThrows?: boolean; subscribeThrows?: boolean }) {
   const regs: { cfg: { event: string; table: string; filter?: string }; cb: (p: unknown) => void }[] = [];
   let statusCb: ((s: string, e?: Error) => void) | undefined;
-  let subscribed = false;
+  // realtime-js: .on() throws only while the channel is joining or joined.
   const ch = {
-    name, regs,
+    name, regs, state: "closed" as "closed" | "joining" | "joined" | "leaving",
     on(_type: string, cfg: { event: string; table: string; filter?: string }, cb: (p: unknown) => void) {
-      if (opts.onThrows || subscribed) throw new Error(`cannot add postgres_changes callbacks for ${name} after subscribe()`);
+      if (opts.onThrows || ch.state === "joining" || ch.state === "joined") throw new Error(`cannot add postgres_changes callbacks for ${name} after subscribe() (state ${ch.state})`);
       regs.push({ cfg, cb });
       return ch;
     },
     subscribe(cb: (s: string, e?: Error) => void) {
       if (opts.subscribeThrows) throw new Error("subscribe boom");
       statusCb = cb;
-      subscribed = true;
+      ch.state = "joining";
       return ch;
     },
-    status: (s: string, e?: Error) => statusCb?.(s, e),
+    status: (s: string, e?: Error) => {
+      ch.state = s === "SUBSCRIBED" ? "joined" : "closed";
+      statusCb?.(s, e);
+    },
     emit(table: string, event: string, payload: { new?: unknown; old?: unknown }) {
       for (const r of regs) {
         if (r.cfg.table === table && r.cfg.event === event) r.cb({ new: {}, old: {}, ...payload });
@@ -60,6 +80,8 @@ export function fakeDb(opts: {
   onThrows?: boolean;
   subscribeThrows?: boolean;
   removeChannelRejects?: boolean;
+  /** Connected socket: removeChannel keeps the channel registered (state "leaving") until ackLeave(). */
+  connected?: boolean;
 } = {}) {
   const queues = new Map<string, RespFn[]>();
   const calls: Call[] = [];
@@ -67,11 +89,16 @@ export function fakeDb(opts: {
   const byName = new Map<string, FakeChannel>(); // live channels, like realtime-js reuse-by-name
   const removed: unknown[] = [];
   const rpcCalls: { fn: string; args: unknown }[] = [];
+  const unexpected: string[] = [];
   const user = opts.user === undefined ? { id: UID, email: "owner@x.co" } : opts.user;
 
   const next = (key: string, call: Call): Resp => {
     const q = queues.get(key);
-    if (!q?.length) throw new Error(`fakeDb: unexpected call (nothing queued) -> ${key}: ${chain(call)}`);
+    if (!q?.length) {
+      const msg = `fakeDb: unexpected call (nothing queued) -> ${key}: ${chain(call)}`;
+      unexpected.push(msg); // recorded because src may swallow the throw into Unknown/CHANNEL_ERROR
+      throw new Error(msg);
+    }
     const r = q.shift()!;
     const v = typeof r === "function" ? r(call) : r;
     // Like PostgREST: a write without a chained .select() returns no rows (data null).
@@ -115,14 +142,18 @@ export function fakeDb(opts: {
     },
     removeChannel: async (ch: FakeChannel) => {
       removed.push(ch);
-      byName.delete(ch.name);
+      ch.state = "leaving";
+      if (!opts.connected) { ch.state = "closed"; byName.delete(ch.name); }
       if (opts.removeChannelRejects) throw new Error("remove failed");
       return "ok";
     },
   };
 
-  return {
+  const api = {
     db: db as unknown as SupabaseClient,
+    unexpected,
+    /** Leave ack from the server: the channel finally closes and leaves the registry. */
+    ackLeave(ch: FakeChannel) { ch.state = "closed"; if (byName.get(ch.name) === ch) byName.delete(ch.name); },
     calls, channels, removed, rpcCalls,
     /** Queue responses for `from(table)` (or `rpc:name`), consumed in order. */
     queue(key: string, ...rs: RespFn[]) { queues.set(key, [...(queues.get(key) ?? []), ...rs]); return this; },
@@ -136,7 +167,19 @@ export function fakeDb(opts: {
     /** Calls made to a table, in order. */
     on: (table: string) => calls.filter((c) => c.table === table),
   };
+  instances.push(api);
+  return api;
 }
+
+// Every test file that imports this helper gets this check: unexpected (unqueued) calls and
+// never-consumed queued responses fail the test even if src swallowed the error into Unknown.
+const instances: { unexpected: string[]; assertDrained: () => void }[] = [];
+afterEach(() => {
+  const all = instances.splice(0);
+  const bad = all.flatMap((i) => i.unexpected);
+  if (bad.length) throw new Error(bad.join("\n"));
+  all.forEach((i) => i.assertDrained());
+});
 export const chain = (c: Call) =>
   c.ops.map(([m, a]) => `${m}(${a.map((x) => JSON.stringify(x)).join(",")})`).join(".");
 export const GATE = `select("*, my_role, my_member_id").eq("id","${LIST}").maybeSingle()`;

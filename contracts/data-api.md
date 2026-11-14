@@ -16,7 +16,7 @@ The **scaffold owner** (whoever creates the Next.js app, as assigned by the orch
 - `src/lib/lists/index.ts` (import `@/lib/lists`): list, todo and realtime functions.
 - `src/lib/sharing/index.ts` (import `@/lib/sharing`): member functions.
 
-Every function takes `db: SupabaseClient` (from `@supabase/supabase-js`) as its first argument, so it works with either client above. Every function except `subscribeToList` is `async`, returns `Promise<Result<T>>` and never throws. Exceptions map to `Unknown`.
+Every function takes `db: SupabaseClient` (from `@supabase/supabase-js`) as its first argument, so it works with either client above. Every function except `subscribeToList` is `async`, returns `Promise<Result<T>>` and never throws. Exceptions map to `Unknown`. `subscribeToList` is sync and also never throws: setup failures go to `handlers.onStatus` (see `realtime.md`).
 
 ## Input rules
 
@@ -24,6 +24,7 @@ Every function takes `db: SupabaseClient` (from `@supabase/supabase-js`) as its 
 - Titles are `trim()`med. Empty or over the limit (list 200, todo 500 chars): `InvalidInput` (`field: 'title'`).
 - Emails are `trim().toLowerCase()`d and must match `^[^@\s]+@[^@\s]+\.[^@\s]+$`, otherwise `InvalidEmail`.
 - Role not `'viewer'|'editor'`: `InvalidInput` (`field: 'role'`).
+- `done` not a boolean: `InvalidInput` (`field: 'done'`).
 - Id not a uuid: `NotFound`.
 
 All input checks run in the data layer before any DB call. DB CHECKs are the backstop.
@@ -49,11 +50,11 @@ Every function may also return `Unauthenticated` and `Unknown`; these are not re
 | `getList` | `(db, listId: string)` | `Result<ListDetail>`. `list.role` and `list.memberId` come from the gate's step 2 row (`my_role`, `my_member_id`). Todos come from a second select. | viewer | `NotFound` |
 | `deleteList` | `(db, listId: string)` | `Result<void>` | owner | `NotFound`, `Forbidden` |
 | `addTodo` | `(db, listId: string, title: string)` | `Result<Todo>`. `position` = current max + 1 (0 if empty), `done: false`. | editor | `InvalidInput`, `NotFound`, `Forbidden` |
-| `toggleTodo` | `(db, todoId: string, done: boolean)` | `Result<Todo>`. Sets `done` to the given value (idempotent, not a flip). | editor | `NotFound`, `Forbidden` |
+| `toggleTodo` | `(db, todoId: string, done: boolean)` | `Result<Todo>`. Sets `done` to the given value (idempotent, not a flip). | editor | `InvalidInput` (`field: 'done'`), `NotFound`, `Forbidden` |
 | `updateTodo` | `(db, todoId: string, patch: TodoPatch)` | `Result<Todo>` | editor | `InvalidInput`, `NotFound`, `Forbidden` |
 | `deleteTodo` | `(db, todoId: string)` | `Result<void>` | editor | `NotFound`, `Forbidden` |
 | `reorderTodos` | `(db, listId: string, orderedIds: string[])` | `Result<void>`. Calls RPC `reorder_todos`; positions become 0..n-1 in the given order. The RPC enforces the gate itself (`P0001`). | editor | `NotFound`, `Forbidden`, `Conflict` (ids are not exactly the list's current todos: refetch and retry) |
-| `subscribeToList` | `(db, listId: string, handlers: ListSubscriptionHandlers)` | `Unsubscribe` (sync, not a Result) | viewer | Not returned. Failures are reported via `handlers.onStatus('CHANNEL_ERROR' \| 'TIMED_OUT', error?)`. Lost or missing access is reported via `onAccessRevoked` (see `realtime.md`). |
+| `subscribeToList` | `(db, listId: string, handlers: ListSubscriptionHandlers)` | `Unsubscribe` (sync, not a Result; idempotent; no handler fires after it). Each call opens its own channel `list:{listId}:{n}` with a unique per-subscription suffix `n`. | viewer | Never thrown or returned. Setup exceptions (try/catch around channel setup) are reported as `handlers.onStatus('CHANNEL_ERROR', { kind: 'Unknown', ... })`. Channel failures are reported as `onStatus('CHANNEL_ERROR' \| 'TIMED_OUT', error?)`. Lost or missing access is reported via `onAccessRevoked` (see `realtime.md`). |
 
 "Required role" is ordered owner > editor > viewer: "editor" means owner or editor; "viewer" means any member.
 

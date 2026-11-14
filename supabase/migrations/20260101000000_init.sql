@@ -62,6 +62,7 @@ create or replace function public.my_member_id(l public.lists) returns uuid
 language sql stable security definer set search_path = '' as $$
   select m.id from public.list_members m
   where m.list_id = l.id
+    and l.owner_id is distinct from auth.uid()   -- NULL for the owner, even if they have a member row
     and m.email = (select lower(u.email) from auth.users u
                    where u.id = auth.uid() and u.email_confirmed_at is not null)
 $$;
@@ -88,20 +89,40 @@ begin
 end
 $$;
 
+-- Server-owned timestamps: clients cannot set created_at/updated_at on INSERT, nor change them on UPDATE.
 create or replace function public.todos_set_updated_at() returns trigger
 language plpgsql security invoker set search_path = '' as $$
-begin new.updated_at := now(); return new; end
+begin
+  if tg_op = 'INSERT' then new.created_at := now(); else new.created_at := old.created_at; end if;
+  new.updated_at := now();
+  return new;
+end
+$$;
+
+create or replace function public.set_created_at() returns trigger
+language plpgsql security invoker set search_path = '' as $$
+begin
+  if tg_op = 'INSERT' then new.created_at := now(); else new.created_at := old.created_at; end if;
+  return new;
+end
 $$;
 
 drop trigger if exists todos_set_updated_at on public.todos;
-create trigger todos_set_updated_at before update on public.todos
+create trigger todos_set_updated_at before insert or update on public.todos
   for each row execute function public.todos_set_updated_at();
+drop trigger if exists lists_set_created_at on public.lists;
+create trigger lists_set_created_at before insert or update on public.lists
+  for each row execute function public.set_created_at();
+drop trigger if exists list_members_set_created_at on public.list_members;
+create trigger list_members_set_created_at before insert or update on public.list_members
+  for each row execute function public.set_created_at();
 
 alter function public.list_role(uuid) owner to postgres;
 alter function public.my_role(public.lists) owner to postgres;
 alter function public.my_member_id(public.lists) owner to postgres;
 alter function public.reorder_todos(uuid, uuid[]) owner to postgres;
 alter function public.todos_set_updated_at() owner to postgres;
+alter function public.set_created_at() owner to postgres;
 
 -- ---------- privileges ----------
 revoke all on table public.lists, public.todos, public.list_members from public, anon, authenticated;
@@ -115,6 +136,7 @@ revoke all on function public.my_role(public.lists) from public, anon, authentic
 revoke all on function public.my_member_id(public.lists) from public, anon, authenticated;
 revoke all on function public.reorder_todos(uuid, uuid[]) from public, anon, authenticated;
 revoke all on function public.todos_set_updated_at() from public, anon, authenticated;
+revoke all on function public.set_created_at() from public, anon, authenticated;
 grant execute on function public.list_role(uuid) to authenticated;
 grant execute on function public.my_role(public.lists) to authenticated;
 grant execute on function public.my_member_id(public.lists) to authenticated;
@@ -172,5 +194,7 @@ begin
         execute format('alter publication supabase_realtime add table public.%I', t);
       end if;
     end loop;
+  else
+    raise notice 'publication supabase_realtime not found: skipped adding lists, todos, list_members; enable Realtime for them manually';
   end if;
 end $$;

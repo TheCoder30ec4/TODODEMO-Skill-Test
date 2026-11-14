@@ -13,6 +13,10 @@ The migration assumes it runs as `postgres` (functions are `alter ... owner to p
 
 Run `supabase/tests/verify.sql` in the SQL editor (or `psql "$DATABASE_URL" -f supabase/tests/verify.sql`). It creates throwaway users and data in one transaction, checks the role matrix (owner, editor, viewer, non-member, unconfirmed-email user, forged JWT email, anon) per table and operation, the column grants, `reorder_todos`, structural RLS checks, and cascades, then rolls back. Any failure raises `VERIFY FAILED: <check>`; success prints `NOTICE: verify.sql: ALL CHECKS PASSED`. Run it against a dev or local project, not production.
 
+## Validation status and caveats
+
+The migration and `verify.sql` were validated on a stubbed Postgres (hand-written `auth` schema, roles and publication), not on real Supabase. Run `verify.sql` once on a real dev project (`supabase start` locally, or a hosted dev project) before relying on it. On the hosted project, `postgres` must be able to read `auth.users` (it can by default); the DEFINER helpers depend on it.
+
 ## Auth settings (Dashboard > Authentication)
 
 - Providers: **Email** enabled.

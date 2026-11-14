@@ -27,7 +27,7 @@ do $$
 declare
   a uuid := gen_random_uuid(); b uuid := gen_random_uuid(); v uuid := gen_random_uuid();
   c uuid := gen_random_uuid(); u uuid := gen_random_uuid();
-  l uuid; l2 uuid; t uuid; mb uuid; mv uuid; mu uuid; r text; n bigint;
+  l uuid; l2 uuid; sp uuid; t uuid; mb uuid; mv uuid; mu uuid; r text; n bigint;
   tbl text;
 begin
   -- fixtures (as postgres)
@@ -42,6 +42,28 @@ begin
   insert into public.list_members (list_id, email, role, added_by) values (l, 'v@x.test', 'viewer', a) returning id into mv;
   insert into public.list_members (list_id, email, role, added_by) values (l, 'u@x.test', 'editor', a) returning id into mu;
   reset role;
+
+  -- owner who also has own member row: my_member_id must stay NULL, role stays owner
+  insert into public.list_members (list_id, email, role, added_by) values (l, 'a@x.test', 'viewer', a);
+  perform pg_temp.as_user(a);
+  perform pg_temp.chk('owner with member row: role owner', public.list_role(l) = 'owner');
+  perform pg_temp.chk('owner with member row: my_member_id null', (select x.my_member_id from public.lists x where x.id = l) is null);
+  reset role;
+  delete from public.list_members where list_id = l and email = 'a@x.test';
+
+  -- spoofed server-owned timestamps on INSERT are overridden
+  perform pg_temp.as_user(b);
+  insert into public.todos (list_id, title, created_by, created_at, updated_at) values (l, 'spoof', b, '1999-01-01', '2099-01-01') returning id into sp;
+  perform pg_temp.chk('todo insert created_at forced', (select created_at from public.todos where id = sp) > now() - interval '1 day');
+  perform pg_temp.chk('todo insert updated_at forced', (select updated_at from public.todos where id = sp) < now() + interval '1 day');
+  reset role;
+  perform pg_temp.as_user(a);
+  insert into public.lists (title, created_at) values ('spoof', '1999-01-01') returning id into l2;
+  perform pg_temp.chk('list insert created_at forced', (select created_at from public.lists where id = l2) > now() - interval '1 day');
+  insert into public.list_members (list_id, email, role, added_by, created_at) values (l2, 'q@x.test', 'viewer', a, '1999-01-01') returning id into sp;
+  perform pg_temp.chk('member insert created_at forced', (select created_at from public.list_members where id = sp) > now() - interval '1 day');
+  reset role;
+  delete from public.lists where id = l2;
 
   -- list_role matrix
   perform pg_temp.as_user(a); perform pg_temp.chk('role owner',  public.list_role(l) = 'owner'); reset role;
@@ -136,9 +158,14 @@ begin
   reset role;
   perform pg_temp.as_user(a); perform pg_temp.aff(format('update public.list_members set role = %L where id = %L', 'editor', mb)); reset role;
 
-  -- updated_at trigger (server clock): client cannot set it, trigger bumps it
+  -- updated_at trigger: backdate as postgres (trigger disabled), then a client update must bump it
+  alter table public.todos disable trigger todos_set_updated_at;
+  update public.todos set updated_at = '2000-01-01', created_at = '2000-01-01' where id = t;
+  alter table public.todos enable trigger todos_set_updated_at;
   perform pg_temp.as_user(b);
-  perform pg_temp.chk('updated_at bumped', (select updated_at from public.todos where id = t) >= (select created_at from public.todos where id = t));
+  update public.todos set title = 'renamed' where id = t;
+  perform pg_temp.chk('updated_at bumped by trigger', (select updated_at from public.todos where id = t) > now() - interval '1 day');
+  perform pg_temp.chk('created_at unchanged on update', (select created_at from public.todos where id = t) = '2000-01-01');
   reset role;
 
   -- reorder_todos
@@ -168,11 +195,14 @@ begin
   end;
 
   -- structural checks
-  perform pg_temp.chk('RLS enabled on all tables',
-    (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace
-      where n.nspname = 'public' and c.relkind = 'r' and c.relrowsecurity) = 3
-    and (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace
-      where n.nspname = 'public' and c.relkind = 'r') = 3);
+  perform pg_temp.chk('RLS enabled on lists, todos, list_members',
+    (select count(*) from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind = 'r'
+       and c.relname in ('lists','todos','list_members') and c.relrowsecurity) = 3);
+  perform pg_temp.chk('no public table without RLS',
+    not exists (select 1 from pg_class c where c.relnamespace = 'public'::regnamespace and c.relkind = 'r' and not c.relrowsecurity));
+  perform pg_temp.chk('realtime publication has the 3 tables',
+    (select count(*) from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public'
+       and tablename in ('lists','todos','list_members')) = 3);
   perform pg_temp.chk('FORCE RLS off',
     not exists (select 1 from pg_class where relnamespace = 'public'::regnamespace and relkind = 'r' and relforcerowsecurity));
   perform pg_temp.chk('all policies TO authenticated only',

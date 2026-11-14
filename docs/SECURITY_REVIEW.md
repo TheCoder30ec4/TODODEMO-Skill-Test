@@ -25,7 +25,7 @@ Everything below was reviewed on the merged code.
 | Dependencies | `package.json`, `package-lock.json` (`npm audit --omit=dev`) | yes |
 | Repo settings | read-only `gh api` calls | yes |
 
-**Result: 0 critical, 0 high, 6 medium, 15 low, 17 info (38 findings).** No high or critical finding is open.
+**Result: 0 critical, 0 high, 6 medium, 15 low, 17 info (38 findings).** No high or critical finding is open. SR-21 (info) records the one CodeQL alert on `main`, triaged as a false positive.
 
 - Open mediums: SR-01 and SR-02. Both depend on Supabase configuration or a live Realtime test that this review could not run.
 - The four deploy mediums (SR-23, SR-24, SR-26, SR-30) are fixed.
@@ -62,7 +62,7 @@ Status:
 | SR-18 | info | Data layer `src/lib/lists`, `src/lib/sharing` | data (T5) | ok |
 | SR-19 | low | Raw `Unknown` and Supabase Auth messages rendered in the UI | ui (T6), data (T5) | open |
 | SR-20 | info | Every future migration: function EXECUTE grants | db (T4) | open |
-| SR-21 | info | CodeQL coverage of `src/` | security-gate (T8) | open |
+| SR-21 | info | CodeQL first analysis on `main`: alert #1 `js/xss-through-dom` | security-gate (T8), main-guardian | triaged (false positive); hardening awaits PR CodeQL run |
 | SR-22 | info | `deploy.yml` `workflow_run` guard | release-engineer (T9) | ok |
 | SR-23 | medium | `deploy.yml` `workflow_dispatch` from any branch | release-engineer (T9) | fixed |
 | SR-24 | medium | `deploy.yml` `VERCEL_TOKEN` exposure | release-engineer (T9) | fixed |
@@ -276,12 +276,14 @@ Status:
   - Extend `verify.sql`'s structural checks ("anon has no EXECUTE on any `public` function"; "every DEFINER function has an empty `search_path`").
 - **Status:** open (process item for db).
 
-### SR-21 (info) CodeQL has not yet scanned `src/` in full
+### SR-21 (info) CodeQL first analysis on `main`: one `js/xss-through-dom` alert, false positive
 
-- **Location:** `.github/workflows/codeql.yml`; Security > Code scanning.
-- **Description:** The `codeql` check ran on PR #16 with 0 alerts (run `43575424614`). PR analysis only reports alerts on lines the PR changes, though, and this PR touches no JS or TS. So `src/` (data layer, UI, auth callback, middleware) has not had a full scan with results reviewed.
-- **Recommendation:** After this workflow merges, review the first `push` analysis on `main` (and the weekly scheduled one) in Security > Code scanning, triage any alerts, and record the result here.
-- **Status:** open until the first analysis on `main` is reviewed.
+- **Location:** `.github/workflows/codeql.yml`; code scanning alert #1 at `src/components/ListsDashboard.tsx:78` (columns 29-45, the `href` template literal).
+- **Description:** The `codeql` check ran on PR #16 with 0 alerts (run `43575424614`), but PR analysis only covers changed lines. The first analysis on `main` (commit `5a53248`) scanned `src/` and opened one alert: #1, `js/xss-through-dom` ("DOM text reinterpreted as HTML", severity high, CWE-79/116). Message: "DOM text is reinterpreted as HTML without escaping meta-characters."
+  - CodeQL's flow: the title typed into the `input` (`e.target.value`, line 67) goes to `setTitle`, then `createList(db, title)`, which returns `{ ...toList(data), role, memberId }` from Supabase (`src/lib/lists/lists.ts`). It is stored in `lists` state, and `l.id` is used in `href={`/lists/${l.id}`}` (line 78). CodeQL treats the whole returned object as tainted, so `l.id` looks like a tainted URL.
+  - Triage: false positive. (1) `l.id` is never the title. `createList` inserts only `{ title }`; the id is the server-generated uuid primary key, and a `uuid` column rejects any other text (SR-11: clients may choose the key, but it is still a uuid). (2) The href has a fixed `/lists/` prefix, so it is a same-origin relative path and cannot become a `javascript:` URL. (3) The title reaches the DOM only as a React text child (line 78), in `aria-label` (line 82) and in `window.confirm` (line 44); React escapes the first two and `confirm` shows plain text. (4) `src/` has no `dangerouslySetInnerHTML`, `innerHTML`, `outerHTML`, `insertAdjacentHTML` or `document.write`. (5) Other sinks checked the same way: `TodoItem.tsx:60,62` (`aria-label` with todo title), `ShareDialog.tsx:76,81` (`aria-label` with email), `ListView.tsx` (`router.replace` with fixed strings only), `login/page.tsx:21` (`window.location.origin` plus a fixed path). None builds a URL or HTML from user text.
+- **Recommendation:** Hardening applied with no behaviour change: `href={`/lists/${encodeURIComponent(l.id)}`}`. A uuid has no characters that encoding changes, so the URL is identical. This should clear the alert, because CodeQL treats URI encoding as a sanitizer for this query, but only the CodeQL run on the PR can confirm it; CodeQL could not be run locally. If the alert remains, the owner should dismiss it as "false positive" with the reasoning above (this review did not touch the alert).
+- **Status:** triaged as a false positive; hardening is in a PR awaiting its CodeQL run. Closed once alert #1 is fixed or dismissed.
 
 ## Deploy workflow
 
@@ -454,7 +456,7 @@ These are the UI and auth callback from PR #17 (`59444e2`), reviewed on `main`. 
 - **Live RLS on a real Supabase project.** `verify.sql` passed only on a stubbed Postgres (`docs/DATABASE.md`). No live Supabase calls were allowed.
 - **Realtime assumptions A1 and A2** (`contracts/realtime.md`). Both need a live Realtime server. See SR-02 and SR-04.
 - **Supabase Auth dashboard settings** (confirm email, secure email change, password signups, anonymous sign-ins, rate limits, redirect URLs, SMTP, CAPTCHA). There is no access to the project.
-- **CodeQL on `main`.** The PR #16 run (0 alerts) covered only lines changed by that PR, which has no JS or TS. A full analysis of `src/` exists only after the first `push` run on `main` or the weekly schedule. SR-21 stays open until that is reviewed.
+- **CodeQL on `main`.** The PR #16 run (0 alerts) covered only lines changed by that PR, which has no JS or TS. The first `push` analysis on `main` (commit `5a53248`) did scan `src/` and found one alert, triaged in SR-21 as a false positive. CodeQL could not be run locally; the effect of the fix is confirmed only by the PR's CodeQL run.
 - **Vercel project configuration** (Git connection, Node version, env vars, Deployment Protection, domains, token scope). There is no Vercel access. SR-30 to SR-32 depend on it.
 - **Deploy runtime behaviour.** No deploy has run yet (run `43617076316` is waiting for approval). The step guard, the tokenless build, and the bounded concurrency queue (SR-33) were checked by reading the code and through the reviewer's verification, not by a production run.
 - **UI behaviour I did not test myself.** The 19 open-redirect payloads, the Host/X-Forwarded-Host spoofing, the cache headers and the client-bundle check were done by the UI reviewer and the security reviewer. I verified them only by reading the code.

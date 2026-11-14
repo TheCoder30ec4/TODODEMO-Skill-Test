@@ -75,7 +75,7 @@ export default function ListsDashboard() {
           {lists.map((l) => (
             <li key={l.id} className={`${s.card} ${s.between}`}>
               <span className={s.row}>
-                <Link href={`/lists/${l.id}`}>{l.title}</Link>
+                <Link href={`/lists/${encodeURIComponent(l.id)}`}>{l.title}</Link>
                 <span className={s.badge}>{l.role}</span>
               </span>
               {l.role === "owner" && (

@@ -238,6 +238,46 @@ describe("event mapping", () => {
     for (const c of h.onMemberDelete.mock.calls) expect(c).toHaveLength(1);
     expect(JSON.stringify(h.onMemberDelete.mock.calls)).not.toContain("@");
   });
+  it("own member DELETE: onMemberDelete fires BEFORE onAccessRevoked; UI unsubscribing inside onAccessRevoked leaves nothing firing after (R02)", async () => {
+    const f = fakeDb().queue("lists", { data: { my_role: "editor", my_member_id: MEMBER } });
+    const h = handlers();
+    const order: string[] = [];
+    h.onMemberDelete.mockImplementation(() => order.push("onMemberDelete"));
+    let unsub = () => {};
+    h.onAccessRevoked.mockImplementation(() => { order.push("onAccessRevoked"); unsub(); });
+    unsub = subscribeToList(f.db, LIST, h);
+    const ch = f.channels[0];
+    ch.status("SUBSCRIBED");
+    await flush();
+    ch.emit("list_members", "DELETE", { old: { id: MEMBER } });
+    expect(order).toEqual(["onMemberDelete", "onAccessRevoked"]);
+    const total = allCalls(h);
+    // anything after the unsubscribe is dropped
+    ch.emit("list_members", "DELETE", { old: { id: MEMBER } });
+    ch.emit("todos", "INSERT", { new: todoRow() });
+    ch.status("CLOSED");
+    await flush();
+    expect(allCalls(h)).toBe(total);
+    expect(order).toEqual(["onMemberDelete", "onAccessRevoked"]);
+    expect(f.removed).toEqual([ch]);
+  });
+  it("reconnect re-stores the own member id on every SUBSCRIBED (R06)", async () => {
+    const A = MEMBER, B = "77777777-7777-4777-8777-777777777777";
+    const { f, h, ch } = await setup("viewer"); // first check: member id A
+    f.queue("lists", { data: { my_role: "viewer", my_member_id: B } });
+    ch.status("CLOSED");
+    ch.status("SUBSCRIBED"); // reconnect: re-check now returns B
+    await flush();
+    ch.emit("list_members", "DELETE", { old: { id: A } });
+    expect(h.onAccessRevoked).not.toHaveBeenCalled(); // A is stale
+    ch.emit("list_members", "DELETE", { old: { id: B } });
+    expect(h.onAccessRevoked).toHaveBeenCalledTimes(1);
+    // role changes follow the new id too
+    ch.emit("list_members", "UPDATE", { new: memberRow({ id: A, role: "editor" }) });
+    expect(h.onRoleChange).not.toHaveBeenCalled();
+    ch.emit("list_members", "UPDATE", { new: memberRow({ id: B, role: "editor" }) });
+    expect(h.onRoleChange).toHaveBeenCalledWith("editor");
+  });
   it("missing optional handlers and throwing handlers never break the channel", async () => {
     const f = fakeDb();
     const h = handlers();

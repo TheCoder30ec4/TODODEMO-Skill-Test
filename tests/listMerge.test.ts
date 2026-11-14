@@ -21,7 +21,12 @@ describe("cmpUpdated", () => {
     expect(cmpUpdated("a", "b")).toBe(-1);
     expect(cmpUpdated("b", "a")).toBe(1);
     expect(cmpUpdated("a", "a")).toBe(0);
-    expect(cmpUpdated("garbage", T1)).toBe(T1 < "garbage" ? 1 : -1); // one side unparsable
+    // one side unparsable, both directions: string order decides, and the two are antisymmetric
+    expect(cmpUpdated("garbage", T1)).toBe(T1 < "garbage" ? 1 : -1);
+    expect(cmpUpdated(T1, "garbage")).toBe(T1 < "garbage" ? -1 : 1);
+    expect(cmpUpdated(T1, "garbage")).toBe(-cmpUpdated("garbage", T1));
+    expect(cmpUpdated("", T1)).toBe(-1); // "" sorts before any ISO string
+    expect(cmpUpdated(T1, "")).toBe(1);
     expect(Number.isNaN(cmpUpdated("x", ""))).toBe(false);
   });
 });
